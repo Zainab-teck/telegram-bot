@@ -63,6 +63,44 @@ export function escapeMd(text: string): string {
 export const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
 /**
+ * UTF-16 code-unit length of `text`.
+ *
+ * Telegram measures its 4096-character limit in UTF-16 code units, after
+ * entity / markup handling. JavaScript's `string.length` is exactly that
+ * unit — one code unit per `charCodeAt` index — so this helper exists to
+ * make the unit explicit at every call site and keep one definition.
+ *
+ * Do NOT replace this with `Array.from(s).length`: that counts Unicode code
+ * points, which is a different (smaller) number for any string containing an
+ * astral character (every emoji, most CJK extensions). A message that fits
+ * under a code-point budget can still exceed Telegram's UTF-16 limit.
+ */
+export function utf16Length(text: string): number {
+  return text.length;
+}
+
+/**
+ * Clip `text` to at most `max` UTF-16 code units without splitting a
+ * surrogate pair. The returned string is <= `max` UTF-16 units (the ellipsis
+ * is one unit). Returns `text` unchanged when it already fits.
+ */
+export function clipUtf16(text: string, max: number): string {
+  if (!Number.isFinite(max) || max < 1) return "";
+  if (utf16Length(text) <= max) return text;
+  // Reserve one unit for the trailing ellipsis.
+  const budget = max - 1;
+  let used = 0;
+  const out: string[] = [];
+  for (const cp of Array.from(text)) {
+    const w = cp.length; // 1 for BMP, 2 for astral code points
+    if (used + w > budget) break;
+    out.push(cp);
+    used += w;
+  }
+  return `${out.join("")}…`;
+}
+
+/**
  * Split a MarkdownV2 (or plain) payload so each chunk fits Telegram's size limit.
  *
  * Prefers breaking on newlines, omitting the separator newline from the chunks.
@@ -77,7 +115,7 @@ export function splitTelegramMessage(
   if (!Number.isFinite(limit) || limit < 1) {
     throw new RangeError(`splitTelegramMessage limit must be >= 1, got ${limit}`);
   }
-  if (text.length <= limit) return [text];
+  if (utf16Length(text) <= limit) return [text];
 
   const parts: string[] = [];
   let remaining = text;
@@ -94,7 +132,7 @@ export function splitTelegramMessage(
     return cut - ((cut - start) % 2);
   }
 
-  while (remaining.length > limit) {
+  while (utf16Length(remaining) > limit) {
     let cut = remaining.lastIndexOf("\n", limit);
     if (cut <= 0) cut = Math.floor(limit);
     cut = safeCut(cut);
@@ -109,7 +147,7 @@ export function splitTelegramMessage(
     if (remaining.startsWith("\n")) remaining = remaining.slice(1);
   }
 
-  if (remaining.length > 0) parts.push(remaining);
+  if (utf16Length(remaining) > 0) parts.push(remaining);
   return parts;
 }
 
@@ -730,11 +768,11 @@ function plainHeadline(
 }
 
 /**
- * Clip a finished plain-text message without splitting a Unicode code point.
+ * Clip a finished plain-text message to Telegram's UTF-16 budget without
+ * splitting a surrogate pair. See {@link clipUtf16} for the unit contract.
  */
 function clipPlainText(text: string, max = MAX_PLAIN_TEXT_LENGTH): string {
-  const characters = Array.from(text);
-  return characters.length <= max ? text : `${characters.slice(0, max - 1).join("")}…`;
+  return clipUtf16(text, max);
 }
 
 /**
